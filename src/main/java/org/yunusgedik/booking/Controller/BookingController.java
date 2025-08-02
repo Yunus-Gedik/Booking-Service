@@ -1,10 +1,8 @@
 package org.yunusgedik.booking.Controller;
 
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.yunusgedik.booking.Model.Booking.Booking;
+import org.yunusgedik.booking.Model.Booking.BookingDTO;
 import org.yunusgedik.booking.Service.BookingService;
 
 import java.util.List;
@@ -31,6 +29,21 @@ public class BookingController {
     @GetMapping("/all")
     public List<Booking> getAll() {
         return bookingService.getAll();
+    }
+
+    @PostMapping("/new")
+    public Booking create(@RequestBody BookingDTO bookingDTO) {
+        return this.bookingService.create(bookingDTO);
+    }
+
+    @PatchMapping("/update/{id}")
+    public Booking update(@RequestBody BookingDTO bookingDTO, @PathVariable Long id) {
+        return this.bookingService.update(id, bookingDTO);
+    }
+
+    @DeleteMapping()
+    public Booking delete(@RequestParam(name = "id") Long id) {
+        return bookingService.delete(id);
     }
 
 }
