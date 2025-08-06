@@ -26,7 +26,6 @@ public class BookingService {
     @Value("${event-service.base-url}")
     private String eventServiceBaseUrl;
 
-
     public BookingService(
         BookingRepository bookingRepository,
         ModelMapper modelMapper,
@@ -44,12 +43,6 @@ public class BookingService {
     public List<Booking> getAll() {
         return bookingRepository.findAll();
     }
-
-//    public Booking create(BookingDTO bookingDTO) {
-//        Booking booking = new Booking();
-//        modelMapper.map(bookingDTO, booking);
-//        return bookingRepository.save(booking);
-//    }
 
     public Booking create(BookingDTO bookingDTO) {
         EventDTO event = fetchEventDetails(bookingDTO.eventId());
