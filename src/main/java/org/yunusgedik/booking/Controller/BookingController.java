@@ -7,7 +7,8 @@ import org.yunusgedik.booking.Service.BookingService;
 
 import java.util.List;
 
-@RestController("/booking")
+@RestController
+@RequestMapping("/booking")
 public class BookingController {
 
     BookingService bookingService;
