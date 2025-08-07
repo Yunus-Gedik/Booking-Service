@@ -1,5 +1,7 @@
 package org.yunusgedik.booking.Service;
 
+import org.springframework.data.redis.core.StringRedisTemplate;
+
 import org.modelmapper.ModelMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -15,6 +17,7 @@ import org.yunusgedik.booking.Repository.BookingRepository;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 
 @Service
 public class BookingService {
@@ -22,18 +25,24 @@ public class BookingService {
     private final BookingRepository bookingRepository;
     private final ModelMapper modelMapper;
     private final RestTemplate restTemplate;
+    private final StringRedisTemplate redisTemplate;
 
     @Value("${event-service.base-url}")
     private String eventServiceBaseUrl;
 
+    @Value("${redis.timeout}")
+    private Integer redisTimeout;
+
     public BookingService(
         BookingRepository bookingRepository,
         ModelMapper modelMapper,
-        RestTemplate restTemplate
+        RestTemplate restTemplate,
+        StringRedisTemplate redisTemplate
     ) {
         this.bookingRepository = bookingRepository;
         this.modelMapper = modelMapper;
         this.restTemplate = restTemplate;
+        this.redisTemplate = redisTemplate;
     }
 
     public Booking get(Long id) {
@@ -45,11 +54,24 @@ public class BookingService {
     }
 
     public Booking create(BookingDTO bookingDTO) {
-        EventDTO event = fetchEventDetails(bookingDTO.eventId());
-        validateEvent(event);
-        checkCapacity(event.id(), event.capacity());
-        Booking booking = prepareBooking(bookingDTO);
-        return bookingRepository.save(booking);
+        Long eventId = bookingDTO.eventId();
+
+        Long fencingToken = acquireLock(eventId);
+        String lockKey = "lock:event:" + eventId;
+
+        try {
+            EventDTO event = fetchEventDetails(eventId);
+            validateEvent(event);
+            checkCapacity(event.id(), event.capacity());
+            Booking booking = prepareBooking(bookingDTO);
+
+            // Check fencing token right before saving
+            validateFencingToken(lockKey, fencingToken);
+
+            return bookingRepository.save(booking);
+        } finally {
+            redisTemplate.delete(lockKey);
+        }
     }
 
     private EventDTO fetchEventDetails(Long eventId) {
@@ -59,6 +81,32 @@ public class BookingService {
             throw new RuntimeException("Event not found");
         }
         return response.getBody();
+    }
+
+    private Long acquireLock(Long eventId) {
+        String counterKey = "lock:counter:event:" + eventId;
+        String lockKey = "lock:event:" + eventId;
+
+        Long fencingToken = redisTemplate.opsForValue().increment(counterKey);
+        Boolean lockAcquired = redisTemplate.opsForValue()
+            .setIfAbsent(
+                lockKey,
+                Objects.requireNonNull(fencingToken).toString(),
+                redisTimeout,
+                java.util.concurrent.TimeUnit.SECONDS
+            );
+
+        if (Boolean.FALSE.equals(lockAcquired)) {
+            throw new IllegalStateException("Could not acquire lock for event booking");
+        }
+        return fencingToken;
+    }
+
+    private void validateFencingToken(String lockKey, Long expectedToken) {
+        String currentToken = redisTemplate.opsForValue().get(lockKey);
+        if (!expectedToken.toString().equals(currentToken)) {
+            throw new IllegalStateException("Lock lost before save, aborting booking");
+        }
     }
 
     private void validateEvent(EventDTO event) {
