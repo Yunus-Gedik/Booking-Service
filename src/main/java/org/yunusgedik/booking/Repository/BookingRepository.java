@@ -6,4 +6,5 @@ import org.yunusgedik.booking.Model.Booking.BookingStatus;
 
 public interface BookingRepository extends JpaRepository<Booking, Long> {
     int countByEventIdAndStatus(Long eventId, BookingStatus status);
+    Booking findFirstByEventIdAndStatusOrderByBookingTimeAsc(Long eventId, BookingStatus status);
 }

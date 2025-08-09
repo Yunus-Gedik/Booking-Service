@@ -18,6 +18,7 @@ import org.yunusgedik.booking.Repository.BookingRepository;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class BookingService {
@@ -55,9 +56,10 @@ public class BookingService {
 
     public Booking create(BookingDTO bookingDTO) {
         Long eventId = bookingDTO.eventId();
-
-        Long fencingToken = acquireLock(eventId);
+        String counterKey = "lock:counter:event:" + eventId;
         String lockKey = "lock:event:" + eventId;
+
+        Long fencingToken = acquireLock(counterKey, lockKey);
 
         try {
             EventDTO event = fetchEventDetails(eventId);
@@ -66,7 +68,7 @@ public class BookingService {
             Booking booking = prepareBooking(bookingDTO);
 
             // Check fencing token right before saving
-            validateFencingToken(lockKey, fencingToken);
+            validateFencingToken(lockKey, fencingToken, "Lock lost before save, aborting booking");
 
             return bookingRepository.save(booking);
         } finally {
@@ -74,10 +76,7 @@ public class BookingService {
         }
     }
 
-    private Long acquireLock(Long eventId) {
-        String counterKey = "lock:counter:event:" + eventId;
-        String lockKey = "lock:event:" + eventId;
-
+    private Long acquireLock(String counterKey, String lockKey) {
         Long fencingToken = redisTemplate.opsForValue().increment(counterKey);
         Boolean lockAcquired = redisTemplate.opsForValue()
             .setIfAbsent(
@@ -88,11 +87,10 @@ public class BookingService {
             );
 
         if (Boolean.FALSE.equals(lockAcquired)) {
-            throw new IllegalStateException("Could not acquire lock for event booking");
+            throw new IllegalStateException("Could not acquire lock");
         }
         return fencingToken;
     }
-
 
     private EventDTO fetchEventDetails(Long eventId) {
         String url = eventServiceBaseUrl + "/event/" + eventId;
@@ -103,10 +101,10 @@ public class BookingService {
         return response.getBody();
     }
 
-    private void validateFencingToken(String lockKey, Long expectedToken) {
+    private void validateFencingToken(String lockKey, Long expectedToken, String throwString) {
         String currentToken = redisTemplate.opsForValue().get(lockKey);
         if (!expectedToken.toString().equals(currentToken)) {
-            throw new IllegalStateException("Lock lost before save, aborting booking");
+            throw new IllegalStateException(throwString);
         }
     }
 
@@ -151,8 +149,11 @@ public class BookingService {
             new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found")
         );
         if (booking.getStatus() != BookingStatus.CONFIRMED) {
-            checkCapacity(booking.getEventId(), fetchEventDetails(booking.getEventId()).capacity());
-            booking.setStatus(BookingStatus.CONFIRMED);
+            if (isCapacityFull(booking.getEventId())) {
+                booking.setStatus(BookingStatus.WAITLISTED);
+            } else {
+                booking.setStatus(BookingStatus.CONFIRMED);
+            }
         }
         return bookingRepository.save(booking);
     }
@@ -162,6 +163,35 @@ public class BookingService {
             new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found")
         );
         booking.setStatus(BookingStatus.CANCELLED);
-        return bookingRepository.save(booking);
+        Booking saved = bookingRepository.save(booking);
+        promoteWaitlisted(booking.getEventId());
+        return saved;
+    }
+
+    private boolean isCapacityFull(Long eventId) {
+        return bookingRepository.countByEventIdAndStatus(eventId, BookingStatus.CONFIRMED)
+               >= fetchEventDetails(eventId).capacity();
+    }
+
+    private void promoteWaitlisted(Long eventId) {
+        String counterKey = "lock:counter:promote:event:" + eventId;
+        String lockKey = "lock:promote:event:" + eventId;
+
+        Long fencingToken = acquireLock(counterKey, lockKey);
+
+        try {
+            Booking waitlisted = bookingRepository
+                .findFirstByEventIdAndStatusOrderByBookingTimeAsc(eventId, BookingStatus.WAITLISTED);
+            if (waitlisted != null) {
+                // Validate fencing token before proceeding
+                validateFencingToken(lockKey, fencingToken, "Lock lost before promotion, aborting");
+
+                waitlisted.setStatus(BookingStatus.CONFIRMED);
+                bookingRepository.save(waitlisted);
+            }
+        } finally {
+            redisTemplate.delete(lockKey);
+        }
+
     }
 }
