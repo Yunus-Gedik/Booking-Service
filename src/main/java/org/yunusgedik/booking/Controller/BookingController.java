@@ -47,4 +47,14 @@ public class BookingController {
         return bookingService.delete(id);
     }
 
+    @PostMapping("/{id}/confirm")
+    public Booking confirm(@PathVariable Long id) {
+        return bookingService.confirm(id);
+    }
+
+    @PostMapping("/{id}/cancel")
+    public Booking cancel(@PathVariable Long id) {
+        return bookingService.cancel(id);
+    }
+
 }

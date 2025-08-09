@@ -74,15 +74,6 @@ public class BookingService {
         }
     }
 
-    private EventDTO fetchEventDetails(Long eventId) {
-        String url = eventServiceBaseUrl + "/event/" + eventId;
-        ResponseEntity<EventDTO> response = restTemplate.getForEntity(url, EventDTO.class);
-        if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-            throw new RuntimeException("Event not found");
-        }
-        return response.getBody();
-    }
-
     private Long acquireLock(Long eventId) {
         String counterKey = "lock:counter:event:" + eventId;
         String lockKey = "lock:event:" + eventId;
@@ -100,6 +91,16 @@ public class BookingService {
             throw new IllegalStateException("Could not acquire lock for event booking");
         }
         return fencingToken;
+    }
+
+
+    private EventDTO fetchEventDetails(Long eventId) {
+        String url = eventServiceBaseUrl + "/event/" + eventId;
+        ResponseEntity<EventDTO> response = restTemplate.getForEntity(url, EventDTO.class);
+        if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+            throw new RuntimeException("Event not found");
+        }
+        return response.getBody();
     }
 
     private void validateFencingToken(String lockKey, Long expectedToken) {
@@ -143,5 +144,24 @@ public class BookingService {
         );
         bookingRepository.delete(booking);
         return booking;
+    }
+
+    public Booking confirm(Long id) {
+        Booking booking = bookingRepository.findById(id).orElseThrow(() ->
+            new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found")
+        );
+        if (booking.getStatus() != BookingStatus.CONFIRMED) {
+            checkCapacity(booking.getEventId(), fetchEventDetails(booking.getEventId()).capacity());
+            booking.setStatus(BookingStatus.CONFIRMED);
+        }
+        return bookingRepository.save(booking);
+    }
+
+    public Booking cancel(Long id) {
+        Booking booking = bookingRepository.findById(id).orElseThrow(() ->
+            new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found")
+        );
+        booking.setStatus(BookingStatus.CANCELLED);
+        return bookingRepository.save(booking);
     }
 }
