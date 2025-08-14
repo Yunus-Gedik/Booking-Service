@@ -11,14 +11,14 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import org.yunusgedik.booking.Model.Booking.Booking;
 import org.yunusgedik.booking.Model.Booking.BookingDTO;
+import org.yunusgedik.booking.Model.Booking.BookingEvent;
 import org.yunusgedik.booking.Model.Booking.BookingStatus;
-import org.yunusgedik.booking.Model.Event.EventDTO;
+import org.yunusgedik.booking.Model.Event.Event;
 import org.yunusgedik.booking.Repository.BookingRepository;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.TimeUnit;
 
 @Service
 public class BookingService {
@@ -27,6 +27,7 @@ public class BookingService {
     private final ModelMapper modelMapper;
     private final RestTemplate restTemplate;
     private final StringRedisTemplate redisTemplate;
+    private final BookingEventProducer bookingEventProducer;
 
     @Value("${event-service.base-url}")
     private String eventServiceBaseUrl;
@@ -38,12 +39,14 @@ public class BookingService {
         BookingRepository bookingRepository,
         ModelMapper modelMapper,
         RestTemplate restTemplate,
-        StringRedisTemplate redisTemplate
+        StringRedisTemplate redisTemplate,
+        BookingEventProducer bookingEventProducer
     ) {
         this.bookingRepository = bookingRepository;
         this.modelMapper = modelMapper;
         this.restTemplate = restTemplate;
         this.redisTemplate = redisTemplate;
+        this.bookingEventProducer = bookingEventProducer;
     }
 
     public Booking get(Long id) {
@@ -62,7 +65,7 @@ public class BookingService {
         Long fencingToken = acquireLock(counterKey, lockKey);
 
         try {
-            EventDTO event = fetchEventDetails(eventId);
+            Event event = fetchEventDetails(eventId);
             validateEvent(event);
             checkCapacity(event.id(), event.capacity());
             Booking booking = prepareBooking(bookingDTO);
@@ -70,7 +73,11 @@ public class BookingService {
             // Check fencing token right before saving
             validateFencingToken(lockKey, fencingToken, "Lock lost before save, aborting booking");
 
-            return bookingRepository.save(booking);
+            Booking bookingSaved = bookingRepository.save(booking);
+
+            produceKafkaBookingCreatedEvent(bookingSaved, event.price());
+
+            return bookingSaved;
         } finally {
             redisTemplate.delete(lockKey);
         }
@@ -92,9 +99,9 @@ public class BookingService {
         return fencingToken;
     }
 
-    private EventDTO fetchEventDetails(Long eventId) {
+    private Event fetchEventDetails(Long eventId) {
         String url = eventServiceBaseUrl + "/event/" + eventId;
-        ResponseEntity<EventDTO> response = restTemplate.getForEntity(url, EventDTO.class);
+        ResponseEntity<Event> response = restTemplate.getForEntity(url, Event.class);
         if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
             throw new RuntimeException("Event not found");
         }
@@ -108,7 +115,7 @@ public class BookingService {
         }
     }
 
-    private void validateEvent(EventDTO event) {
+    private void validateEvent(Event event) {
         if (!event.active()) {
             throw new IllegalStateException("Event is not active");
         }
@@ -193,5 +200,18 @@ public class BookingService {
             redisTemplate.delete(lockKey);
         }
 
+    }
+
+    private void produceKafkaBookingCreatedEvent(Booking booking, Double price) {
+        bookingEventProducer.sendBookingEvent(
+            new BookingEvent(
+                booking.getId(),
+                booking.getUserId(),
+                booking.getEventId(),
+                booking.getStatus(),
+                price,
+                LocalDateTime.now()
+            )
+        );
     }
 }
