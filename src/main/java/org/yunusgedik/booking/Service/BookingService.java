@@ -16,6 +16,7 @@ import org.yunusgedik.booking.Model.Booking.BookingStatus;
 import org.yunusgedik.booking.Model.Event.Event;
 import org.yunusgedik.booking.Repository.BookingRepository;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
@@ -75,7 +76,7 @@ public class BookingService {
 
             Booking bookingSaved = bookingRepository.save(booking);
 
-            produceKafkaBookingCreatedEvent(bookingSaved, event.getPrice());
+            produceKafkaBookingEvent(bookingSaved, event.getPrice());
 
             return bookingSaved;
         } finally {
@@ -131,6 +132,7 @@ public class BookingService {
     private Booking prepareBooking(BookingDTO bookingDTO) {
         Booking booking = modelMapper.map(bookingDTO, Booking.class);
         booking.setBookingTime(LocalDateTime.now());
+        booking.setCreatedAt(Instant.now());
         booking.setStatus(BookingStatus.CONFIRMED);
         return booking;
     }
@@ -155,14 +157,25 @@ public class BookingService {
         Booking booking = bookingRepository.findById(id).orElseThrow(() ->
             new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found")
         );
+        Event event = fetchEventDetails(booking.getEventId());
+
         if (booking.getStatus() != BookingStatus.CONFIRMED) {
-            if (isCapacityFull(booking.getEventId())) {
+            if (isCapacityFull(event)) {
                 booking.setStatus(BookingStatus.WAITLISTED);
             } else {
                 booking.setStatus(BookingStatus.CONFIRMED);
             }
         }
-        return bookingRepository.save(booking);
+
+        Booking bookingSaved = bookingRepository.save(booking);
+
+        Double price = (bookingSaved.getStatus() == BookingStatus.WAITLISTED)
+            ? null
+            : event.getPrice();
+
+        produceKafkaBookingEvent(bookingSaved, price);
+
+        return bookingSaved;
     }
 
     public Booking cancel(Long id) {
@@ -170,14 +183,18 @@ public class BookingService {
             new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found")
         );
         booking.setStatus(BookingStatus.CANCELLED);
-        Booking saved = bookingRepository.save(booking);
-        promoteWaitlisted(booking.getEventId());
-        return saved;
+        Booking bookingSaved = bookingRepository.save(booking);
+
+        Event event = fetchEventDetails(bookingSaved.getEventId());
+        produceKafkaBookingEvent(bookingSaved, event.getPrice());
+
+        promoteWaitlisted(bookingSaved.getEventId());
+        return bookingSaved;
     }
 
-    private boolean isCapacityFull(Long eventId) {
-        return bookingRepository.countByEventIdAndStatus(eventId, BookingStatus.CONFIRMED)
-               >= fetchEventDetails(eventId).getCapacity();
+    private boolean isCapacityFull(Event event) {
+        return bookingRepository.countByEventIdAndStatus(event.getId(), BookingStatus.CONFIRMED)
+               >= event.getCapacity();
     }
 
     private void promoteWaitlisted(Long eventId) {
@@ -194,7 +211,10 @@ public class BookingService {
                 validateFencingToken(lockKey, fencingToken, "Lock lost before promotion, aborting");
 
                 waitlisted.setStatus(BookingStatus.CONFIRMED);
-                bookingRepository.save(waitlisted);
+                Booking bookingSaved = bookingRepository.save(waitlisted);
+
+                Event event = fetchEventDetails(bookingSaved.getEventId());
+                produceKafkaBookingEvent(bookingSaved, event.getPrice());
             }
         } finally {
             redisTemplate.delete(lockKey);
@@ -202,7 +222,7 @@ public class BookingService {
 
     }
 
-    private void produceKafkaBookingCreatedEvent(Booking booking, Double price) {
+    private void produceKafkaBookingEvent(Booking booking, Double price) {
         bookingEventProducer.sendBookingEvent(
             new BookingEvent(
                 booking.getId(),
