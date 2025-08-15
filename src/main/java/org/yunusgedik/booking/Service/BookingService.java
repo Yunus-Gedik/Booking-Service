@@ -67,7 +67,7 @@ public class BookingService {
         try {
             Event event = fetchEventDetails(eventId);
             validateEvent(event);
-            checkCapacity(event.id(), event.capacity());
+            checkCapacity(event.getId(), event.getCapacity());
             Booking booking = prepareBooking(bookingDTO);
 
             // Check fencing token right before saving
@@ -75,7 +75,7 @@ public class BookingService {
 
             Booking bookingSaved = bookingRepository.save(booking);
 
-            produceKafkaBookingCreatedEvent(bookingSaved, event.price());
+            produceKafkaBookingCreatedEvent(bookingSaved, event.getPrice());
 
             return bookingSaved;
         } finally {
@@ -116,7 +116,7 @@ public class BookingService {
     }
 
     private void validateEvent(Event event) {
-        if (!event.active()) {
+        if (!event.isActive()) {
             throw new IllegalStateException("Event is not active");
         }
     }
@@ -177,7 +177,7 @@ public class BookingService {
 
     private boolean isCapacityFull(Long eventId) {
         return bookingRepository.countByEventIdAndStatus(eventId, BookingStatus.CONFIRMED)
-               >= fetchEventDetails(eventId).capacity();
+               >= fetchEventDetails(eventId).getCapacity();
     }
 
     private void promoteWaitlisted(Long eventId) {
