@@ -1,7 +1,6 @@
 package org.yunusgedik.booking.Security;
 
 import org.springframework.stereotype.Component;
-import org.yunusgedik.booking.Model.Booking.Booking;
 import org.yunusgedik.booking.Service.BookingService;
 
 @Component("belongCheck")
